@@ -1,0 +1,19 @@
+# Python venv
+venv/
+.env
+*.env
+# Data folders
+data/uploads/
+data/vector_store/
+db/
+# Secrets
+*.sqlite3
+*.key
+*.pem
+# __pycache__ and temp files
+__pycache__/
+*.pyc
+*.pyo
+*.log
+# OS files
+.DS_Store
