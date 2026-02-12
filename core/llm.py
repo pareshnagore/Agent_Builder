@@ -149,63 +149,89 @@ class GeminiProvider(LLMProvider):
             raise LLMException(f"Failed to initialize Gemini client: {str(e)}")
 
     def list_models(self) -> list[str]:
-        """Fetch available Gemini models."""
+        """Fetch available Gemini models dynamically from the API."""
         try:
-            # Return known Gemini models (can be extended)
+            models = self.client.models.list()
+            model_names = []
+            for model in models:
+                # Extract model name from the full identifier
+                name = model.name.split("/")[-1] if hasattr(model, "name") else str(model)
+                # Filter to include only generative models
+                if hasattr(model, "supported_generation_methods"):
+                    if "generateContent" in model.supported_generation_methods:
+                        model_names.append(name)
+                else:
+                    # Fallback: include if it looks like a valid model name
+                    if name and not name.startswith("_"):
+                        model_names.append(name)
+            
+            # If no models found from API, return fallback list
+            if not model_names:
+                model_names = [
+                    "gemini-2.5-flash",
+                    "gemini-2.5-pro",
+                    "gemini-1.5-pro",
+                    "gemini-1.5-flash",
+                ]
+            
+            return model_names
+        except Exception as e:
+            # Fallback to known models if API fails
             return [
-                "gemini-2.0-flash",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
                 "gemini-1.5-pro",
                 "gemini-1.5-flash",
             ]
-        except Exception as e:
-            raise LLMException(f"Failed to list Gemini models: {str(e)}")
 
     def chat(self, model: str, messages: list[dict], **kwargs) -> str:
-        """Send a chat request to Gemini using the chat interface."""
+        """Send a chat request to Gemini."""
         try:
             from google.genai import types
             
-            # Extract system prompt and other config from messages
+            # Extract system prompt if present
             system_prompt = None
-            user_messages = []
+            content_messages = []
             
             for msg in messages:
                 role = msg.get("role")
                 content = msg.get("content")
                 
+                if not role or not content:
+                    continue
+                
                 if role == "system":
                     system_prompt = content
-                elif role in ("user", "assistant", "model"):
-                    user_messages.append({"role": role, "content": content})
+                else:
+                    # Convert "assistant" to "model" for Gemini
+                    gemini_role = "model" if role == "assistant" else role
+                    content_messages.append({
+                        "role": gemini_role,
+                        "parts": [{"text": content}]
+                    })
             
-            if not user_messages:
-                raise LLMException("No user messages to send to Gemini")
+            if not content_messages:
+                raise LLMException("No valid messages to send to Gemini")
             
-            # Create config with system instruction
-            config = None
+            # Create config with system instruction if present
+            config_dict = {}
             if system_prompt:
-                config = types.GenerateContentConfig(
-                    system_instruction=system_prompt
-                )
+                config_dict["system_instruction"] = system_prompt
             
-            # Create a chat and send all messages
-            chat = self.client.chats.create(model=model, config=config)
+            # Add any additional kwargs
+            config_dict.update(kwargs)
             
-            # Send all user messages (except the last one which is the current query)
-            for msg in user_messages[:-1]:
-                if msg["role"] != "system":
-                    # Skip sending previous assistant messages - they're implicit in history
-                    if msg["role"] == "user":
-                        chat.send_message(msg["content"])
+            config = types.GenerateContentConfig(**config_dict) if config_dict else None
             
-            # Send the last message and get response
-            last_message = user_messages[-1]
-            if last_message["role"] == "user":
-                response = chat.send_message(last_message["content"])
-                return response.text
-            else:
-                raise LLMException("Last message must be from user")
-                
+            # Send request directly using generate_content
+            response = self.client.models.generate_content(
+                model=model,
+                contents=content_messages,
+                config=config
+            )
+            
+            return response.text
+            
         except LLMException:
             raise
         except Exception as e:

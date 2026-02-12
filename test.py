@@ -71,12 +71,12 @@ try:
         available_models = llm.list_gemini_models()
         llm_model = st.sidebar.selectbox(
             "Choose Gemini Model",
-            available_models if available_models else ["gemini-2.0-flash"],
+            available_models if available_models else ["gemini-2.5-flash"],
             key="gemini_llm_model"
         )
 except LLMException as e:
     st.sidebar.error(f"Error loading LLM models: {str(e)}")
-    llm_model = Config.DEFAULT_OLLAMA_MODEL if provider == "Ollama" else "gemini-2.0-flash"
+    llm_model = Config.DEFAULT_OLLAMA_MODEL if provider == "Ollama" else "gemini-2.5-flash"
 
 # System Prompt
 system_prompt = st.sidebar.text_area(

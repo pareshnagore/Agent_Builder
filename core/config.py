@@ -41,7 +41,7 @@ class Config:
     ]
     
     DEFAULT_OLLAMA_MODEL: str = "gemma2:2b"
-    DEFAULT_GEMINI_MODEL: str = "gemini-2.0-flash"
+    DEFAULT_GEMINI_MODEL: str = "gemini-2.5-flash"
 
     # Embeddings Configuration
     EMBEDDINGS_MODEL: str = os.getenv("EMBEDDINGS_MODEL", "mxbai-embed-large")
