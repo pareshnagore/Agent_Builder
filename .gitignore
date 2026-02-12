@@ -1,8 +1,10 @@
 # Python venv
 venv/
+.venv/
 .env
 *.env
 # Data folders
+data/
 data/uploads/
 data/vector_store/
 db/
