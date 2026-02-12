@@ -120,6 +120,12 @@ my_ai_framework/
 - Always write robust error handling and clear user/developer messages
 - Document all public APIs and provide typing
 
+## SDK Usage Guidelines
+- Use documentation from https://ai.google.dev/gemini-api/ for Gemini integration
+- For Ollama, refer to https://ollama.com/docs/api for API usage and best practices
+- Follow the principle of least privilege when designing tool wrappers (e.g., file access should be sandboxed and require explicit user approval)
+- Ensure all API calls are wrapped with error handling that provides clear feedback to the user and does not crash the app
+
 ## How to Use These Instructions
 - AI assistants should always reference this file for context, even in new chats or when working on different phases
 - Maintain awareness of the broader vision and incremental plan

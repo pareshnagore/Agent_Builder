@@ -22,6 +22,10 @@ pyaudio
 gTTS
 tiktoken 
 nltk
+google-genai
+requests
+python-dotenv
+sentence-transformers
 
 
 # === Web Framework + API ===
