@@ -26,6 +26,8 @@ google-genai
 requests
 python-dotenv
 sentence-transformers
+docx
+openpyxl
 
 
 # === Web Framework + API ===
