@@ -221,10 +221,19 @@ class EmbeddingsAdapter:
         Return a callable that can be used directly with Chroma.
         This allows passing the adapter to ChromaDB as an embedding function.
         """
-        def embedding_function(texts):
-            """Chroma-compatible embedding function."""
-            if isinstance(texts, str):
-                texts = [texts]
-            return self.embed_batch(texts)
+        adapter = self
         
-        return embedding_function
+        class EmbeddingFunction:
+            """Chroma-compatible embedding function wrapper."""
+            
+            def __call__(self, input):
+                """Embed texts (Chroma expects 'input' parameter)."""
+                if isinstance(input, str):
+                    input = [input]
+                return adapter.embed_batch(input)
+            
+            def name(self):
+                """Return function name."""
+                return f"{adapter.mode}_{adapter.model.replace('/', '_').replace(':', '_')}"
+        
+        return EmbeddingFunction()
