@@ -154,19 +154,7 @@ class Indexer:
     ) -> Generator[dict, None, None]:
         """
         Index a single document file.
-        Yields progress updates.
-        
-        Args:
-            file_path: Path to document
-            force: Force re-indexing even if already ingested
-            max_tokens: Max tokens per chunk
-            overlap_tokens: Tokens to overlap
-            document_title: Custom document title (uses filename if not provided)
-            custom_tags: User-defined metadata tags
-            batch_size: Number of chunks to embed at once
-        
-        Yields:
-            Progress dicts with keys: status, message, progress, doc_ids (on completion)
+        Yields progress updates and robust error messages for each pipeline stage.
         """
         file_path = Path(file_path)
 
@@ -179,35 +167,43 @@ class Indexer:
             }
             return
 
+        # Step 1: Load document
         try:
-            # Step 1: Load document
             yield {
                 "status": "loading",
                 "message": f"Loading {file_path.name}...",
                 "progress": 0.1,
             }
-
             text, file_type, supports_paging = DocumentLoaderFactory.load(str(file_path))
-
-            if not text.strip():
-                raise IndexerException(f"Document is empty: {file_path.name}")
-
+            if not text or not text.strip():
+                yield {
+                    "status": "error",
+                    "message": f"Document is empty or could not be loaded: {file_path.name}",
+                    "progress": 0.0,
+                }
+                return
             yield {
                 "status": "loaded",
                 "message": f"Loaded {len(text)} characters",
                 "progress": 0.2,
             }
+        except Exception as e:
+            yield {
+                "status": "error",
+                "message": f"Loader error for {file_path.name}: {str(e)}",
+                "progress": 0.0,
+            }
+            return
 
-            # Step 2: Chunk document
+        # Step 2: Chunk document
+        try:
             yield {
                 "status": "chunking",
                 "message": "Chunking document...",
                 "progress": 0.3,
             }
-
             timestamp = datetime.now().isoformat()
             title = document_title or file_path.stem
-
             chunks_with_metadata = self.chunker.chunk_document(
                 text=text,
                 max_tokens=max_tokens,
@@ -218,57 +214,80 @@ class Indexer:
                 upload_timestamp=timestamp,
                 custom_tags=custom_tags or {},
             )
-
+            if not chunks_with_metadata:
+                yield {
+                    "status": "error",
+                    "message": f"Chunker produced no chunks for {file_path.name}",
+                    "progress": 0.0,
+                }
+                return
             yield {
                 "status": "chunked",
                 "message": f"Created {len(chunks_with_metadata)} chunks",
                 "progress": 0.4,
             }
+        except Exception as e:
+            yield {
+                "status": "error",
+                "message": f"Chunker error for {file_path.name}: {str(e)}",
+                "progress": 0.0,
+            }
+            return
 
-            # Step 3: Add to vector DB
+        # Step 3: Add to vector DB
+        try:
             yield {
                 "status": "vectorizing",
                 "message": "Vectorizing and storing chunks...",
                 "progress": 0.5,
             }
-
             doc_ids = [metadata["chunk_id"] for _, metadata in chunks_with_metadata]
             chunk_texts = [text for text, _ in chunks_with_metadata]
             metadatas = [metadata for _, metadata in chunks_with_metadata]
-
-            # Add to vector DB in batches
             for i in range(0, len(chunk_texts), batch_size):
                 batch_texts = chunk_texts[i : i + batch_size]
                 batch_metadatas = metadatas[i : i + batch_size]
                 batch_ids = doc_ids[i : i + batch_size]
-
-                self.vectordb.add_documents(
-                    documents=batch_texts,
-                    metadatas=batch_metadatas,
-                    ids=batch_ids
-                )
-
+                try:
+                    self.vectordb.add_documents(
+                        documents=batch_texts,
+                        metadatas=batch_metadatas,
+                        ids=batch_ids
+                    )
+                except Exception as ve:
+                    yield {
+                        "status": "error",
+                        "message": f"VectorDB add error for {file_path.name}: {str(ve)}",
+                        "progress": 0.0,
+                    }
+                    return
                 progress = 0.4 + (0.5 * (i + len(batch_texts)) / len(chunk_texts))
                 yield {
                     "status": "vectorizing",
                     "message": f"Vectorized {i + len(batch_texts)}/{len(chunk_texts)} chunks",
                     "progress": progress,
                 }
+        except Exception as e:
+            yield {
+                "status": "error",
+                "message": f"VectorDB error for {file_path.name}: {str(e)}",
+                "progress": 0.0,
+            }
+            return
 
-            # Step 4: Mark as ingested
+        # Step 4: Mark as ingested
+        try:
             self.state.mark_ingested(str(file_path), doc_ids)
-
             yield {
                 "status": "complete",
                 "message": f"Successfully ingested {file_path.name}",
                 "progress": 1.0,
                 "doc_ids": doc_ids,
             }
-
         except Exception as e:
             yield {
                 "status": "error",
-                "message": f"Failed to ingest {file_path.name}: {str(e)}",
+                "message": f"Failed to mark as ingested for {file_path.name}: {str(e)}",
                 "progress": 0.0,
             }
 

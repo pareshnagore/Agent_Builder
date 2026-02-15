@@ -5,7 +5,7 @@ Supports multiple file formats: PDF, TXT, DOCX, CSV, MD, XLSX.
 
 import os
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Tuple, List
 from abc import ABC, abstractmethod
 
 
@@ -268,7 +268,7 @@ class DocumentLoaderFactory:
         return loader_class()
 
     @staticmethod
-    def load(file_path: str) -> tuple[str, str, bool]:
+    def load(file_path: str) -> Tuple[str, str, bool]:
         """
         Load document using appropriate loader.
         
@@ -291,6 +291,6 @@ class DocumentLoaderFactory:
         return text, file_type, loader.supports_paging()
 
     @staticmethod
-    def supported_types() -> list[str]:
+    def supported_types() -> List[str]:
         """Return list of supported file extensions."""
         return list(DocumentLoaderFactory.LOADERS.keys())

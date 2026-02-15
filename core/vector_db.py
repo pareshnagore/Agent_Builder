@@ -176,17 +176,7 @@ class VectorDB:
     ) -> Dict[str, Any]:
         """
         Query the vector database.
-        
-        Args:
-            query_texts: List of query strings
-            n_results: Number of results to return per query
-            where: Optional filter dictionary for metadata
-        
-        Returns:
-            Dictionary with keys: ids, distances, documents, metadatas
-        
-        Raises:
-            VectorDBException: If query fails
+        Always returns a dict, even if ChromaDB returns a list (for compatibility).
         """
         try:
             if not query_texts:
@@ -197,6 +187,11 @@ class VectorDB:
                 n_results=n_results,
                 where=where
             )
+            # Defensive: if ChromaDB returns a list, wrap it in a dict
+            if isinstance(results, list):
+                return {"documents": results, "metadatas": [], "distances": [], "ids": []}
+            if not isinstance(results, dict):
+                raise VectorDBException(f"ChromaDB returned unexpected type: {type(results)}")
             return results
         except VectorDBException:
             raise
@@ -211,14 +206,7 @@ class VectorDB:
     ) -> Dict[str, Any]:
         """
         Convenience method to query with a single text.
-        
-        Args:
-            query_text: Single query string
-            n_results: Number of results to return
-            where: Optional filter dictionary
-        
-        Returns:
-            Query results (same format as query_texts)
+        Always returns a dict, even if ChromaDB returns a list.
         """
         return self.query_texts([query_text], n_results=n_results, where=where)
 

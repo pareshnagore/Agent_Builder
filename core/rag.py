@@ -235,12 +235,18 @@ class RAGEngine:
             policy = RetrievalPolicy(policy_type="strict", top_k=top_k)
 
         try:
-            # Query vector DB
+            # Query vector DB (use 'where' not 'filters')
             results = self.vectordb.query_text(
                 query_text=query,
                 n_results=policy.top_k * 2,  # Get extra for filtering
-                filters=filters
+                where=filters
             )
+
+            # Defensive: ChromaDB should return a dict, but if a list, raise a clear error
+            if isinstance(results, list):
+                raise RAGException("VectorDB returned a list, not a dict. This usually means the collection is empty or ChromaDB API changed. Please check your vector DB and document ingestion.")
+            if not isinstance(results, dict):
+                raise RAGException(f"VectorDB returned unexpected type: {type(results)}")
 
             chunks = results.get("documents", [])
             metadatas = results.get("metadatas", [])
