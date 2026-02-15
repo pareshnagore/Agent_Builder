@@ -60,7 +60,8 @@ def initialize_vector_db(embedding_adapter: EmbeddingsAdapter) -> Optional[Vecto
 
 def initialize_rag_engine(
     embedding_mode: str,
-    embedding_model: str
+    embedding_model: str,
+    chunking_strategy: str = "sentence-aware",
 ) -> Optional[RAGEngine]:
     """Initialize and return RAG engine (creates its own components internally)."""
     try:
@@ -69,11 +70,61 @@ def initialize_rag_engine(
             embedding_model=embedding_model,
             persist_dir="data/vector_store",
             state_file="data/ingestion_state.json",
-            logs_dir="data/logs"
+            logs_dir="data/logs",
+            chunking_strategy=chunking_strategy,
         )
     except Exception as e:
         st.error(f"Failed to initialize RAG engine: {str(e)}")
         return None
+
+
+# ========== INDEXING ==========
+def _run_indexing(
+    rag_engine: RAGEngine,
+    file_paths: list,
+    chunk_size: int,
+    chunk_overlap: int,
+    job: dict,
+) -> None:
+    """Run indexing, updating job dict with progress."""
+    try:
+        total = len(file_paths)
+        indexed, failed = 0, 0
+        for idx, (fname, path) in enumerate(file_paths):
+            doc_ids = None
+            last_update = {}
+            try:
+                for update in rag_engine.index_file(
+                    file_path=str(path),
+                    force=False,
+                    max_tokens=chunk_size,
+                    overlap_tokens=chunk_overlap,
+                ):
+                    last_update = update
+                    job["message"] = f"{fname}: {update.get('message', '')}"
+                    job["progress"] = (idx + update.get("progress", 0)) / total
+                    if update.get("status") == "skip":
+                        indexed += 1
+                        break
+                    if "doc_ids" in update:
+                        doc_ids = update["doc_ids"]
+            except Exception as e:
+                failed += 1
+                job["message"] = f"{fname}: Error - {e}"
+                job["indexed"] = indexed
+                job["failed"] = failed
+                continue
+            if doc_ids is not None or last_update.get("status") != "skip":
+                indexed += 1
+            job["indexed"] = indexed
+            job["failed"] = failed
+        job["status"] = "done"
+        job["message"] = f"✅ Indexed {indexed}/{total} files"
+        job["progress"] = 1.0
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = f"Error: {e}"
 
 
 # ========== FILE HANDLING ==========
@@ -175,7 +226,8 @@ st.sidebar.subheader("📌 Phase 1: Embeddings Configuration")
 embeddings_mode = st.sidebar.selectbox(
     "Choose Embeddings Mode",
     ["ollama", "sentence-transformer"],
-    key="embeddings_mode"
+    key="embeddings_mode",
+    help="sentence-transformer: faster indexing (local, no network)"
 )
 
 if embeddings_mode == "ollama":
@@ -297,12 +349,14 @@ with tab1:
     
     with col2:
         st.markdown("### Step 2: Initialize & Index")
+        st.info("💡 **Faster indexing:** Use **sentence-transformer** in the sidebar (local, no network).")
         
         if st.button("🚀 Initialize Components & Index", use_container_width=True):
             with st.spinner("Initializing RAG Engine..."):
                 rag_engine = initialize_rag_engine(
                     embedding_mode=embeddings_mode,
-                    embedding_model=embeddings_model
+                    embedding_model=embeddings_model,
+                    chunking_strategy=chunking_strategy,
                 )
                 if rag_engine is None:
                     st.stop()
@@ -313,47 +367,29 @@ with tab1:
                 st.warning("No documents to index.")
                 st.stop()
 
-            with st.spinner("Processing and indexing documents..."):
-                indexed_count = 0
-                failed_count = 0
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                for idx, uploaded_file in enumerate(uploaded_files):
-                    file_path = save_uploaded_file(uploaded_file)
-                    if file_path is None:
-                        failed_count += 1
-                        continue
-                    status_text.text(f"Processing: {uploaded_file.name}")
-                    try:
-                        # Use rag_engine.index_file (not direct indexer)
-                        progress_updates = rag_engine.index_file(
-                            file_path=str(file_path),
-                            force=False,
-                            max_tokens=chunk_size,
-                            overlap_tokens=chunk_overlap
-                        )
-                        doc_ids = None
-                        for update in progress_updates:
-                            status_text.text(f"{update.get('message', '')}")
-                            if update.get("status") == "skip":
-                                st.info(f"⏭️ {uploaded_file.name} already indexed")
-                                indexed_count += 1
-                                break
-                            if "doc_ids" in update:
-                                doc_ids = update["doc_ids"]
-                        if doc_ids is not None or update.get("status") != "skip":
-                            indexed_count += 1
-                    except Exception as e:
-                        st.error(f"Failed to process {uploaded_file.name}: {str(e)}")
-                        failed_count += 1
-                    progress_bar.progress((idx + 1) / len(uploaded_files))
-                status_text.text(f"✅ Indexed {indexed_count}/{len(uploaded_files)} files")
-                if indexed_count > 0:
-                    st.success(f"📊 Successfully indexed {indexed_count} document(s)")
-                if failed_count > 0:
-                    st.warning(f"⚠️ Failed to index {failed_count} document(s)")
-            # Always refresh indexed docs from backend
-            st.session_state.indexed_documents = refresh_indexed_documents(st.session_state.rag_engine)
+            # Save files to disk
+            file_paths = []
+            for uf in uploaded_files:
+                path = save_uploaded_file(uf)
+                if path:
+                    file_paths.append((uf.name, path))
+            if not file_paths:
+                st.error("Failed to save uploaded files.")
+                st.stop()
+
+            with st.status("Indexing documents...", expanded=True) as status:
+                job = {"status": "running", "message": "", "progress": 0, "indexed": 0, "failed": 0, "error": None}
+                _run_indexing(rag_engine, file_paths, chunk_size, chunk_overlap, job)
+                status.update(label=job.get("message", "Done"), state="complete")
+            if job.get("status") == "done":
+                st.success(job.get("message", ""))
+                if job.get("indexed", 0) > 0:
+                    st.success(f"📊 Successfully indexed {job['indexed']} document(s)")
+                if job.get("failed", 0) > 0:
+                    st.warning(f"⚠️ Failed to index {job['failed']} document(s)")
+            else:
+                st.error(job.get("error", job.get("message", "Unknown error")))
+            st.session_state.indexed_documents = refresh_indexed_documents(rag_engine)
 
     # Display indexed documents (from backend state)
     st.markdown("### Indexed Documents")

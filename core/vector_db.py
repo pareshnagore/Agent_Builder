@@ -60,6 +60,7 @@ Vector Database Adapter for Agent_ng.
 Wraps ChromaDB with a clean, reusable interface.
 """
 
+import json
 from typing import Optional, List, Dict, Any
 import os
 from pathlib import Path
@@ -127,6 +128,26 @@ class VectorDB:
         except Exception as e:
             raise VectorDBException(f"Failed to initialize Chroma: {str(e)}")
 
+    @staticmethod
+    def _sanitize_metadata_for_chroma(meta: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert metadata to ChromaDB-compatible format.
+        ChromaDB accepts only str, int, float, bool — no None, no nested dicts.
+        """
+        if not meta:
+            return {}
+        result = {}
+        for k, v in meta.items():
+            if v is None:
+                continue  # ChromaDB rejects None; omit the key
+            if isinstance(v, dict):
+                result[k] = json.dumps(v)
+            elif isinstance(v, (str, int, float, bool)):
+                result[k] = v
+            else:
+                result[k] = str(v)
+        return result
+
     def add_documents(
         self,
         documents: List[str],
@@ -158,9 +179,13 @@ class VectorDB:
             elif len(metadatas) != len(documents):
                 raise VectorDBException("Metadatas length must match documents length")
 
+            # ChromaDB requires scalar metadata values (no nested dicts).
+            # Sanitize for robustness across different callers.
+            sanitized = [self._sanitize_metadata_for_chroma(m) for m in metadatas]
+
             self.collection.add(
                 documents=documents,
-                metadatas=metadatas,
+                metadatas=sanitized,
                 ids=ids
             )
         except VectorDBException:
@@ -235,9 +260,9 @@ class VectorDB:
             Number of documents deleted
         """
         try:
-            # Query documents with matching source metadata
+            # Query documents with matching source metadata (indexer uses source_file)
             results = self.collection.get(
-                where={"source": source} if source else None
+                where={"source_file": source} if source else None
             )
             if not results or not results.get("ids"):
                 return 0
@@ -295,6 +320,6 @@ class VectorDB:
             Query results with matching documents
         """
         try:
-            return self.collection.get(where={"source": source})
+            return self.collection.get(where={"source_file": source})
         except Exception as e:
             raise VectorDBException(f"Failed to get documents by source: {str(e)}")

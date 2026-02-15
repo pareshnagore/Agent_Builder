@@ -150,7 +150,7 @@ class Indexer:
         overlap_tokens: int = 50,
         document_title: Optional[str] = None,
         custom_tags: Optional[dict] = None,
-        batch_size: int = 10,
+        batch_size: int = 32,
     ) -> Generator[dict, None, None]:
         """
         Index a single document file.
@@ -298,7 +298,7 @@ class Indexer:
         force: bool = False,
         max_tokens: int = 400,
         overlap_tokens: int = 50,
-        batch_size: int = 10,
+        batch_size: int = 32,
     ) -> Generator[dict, None, None]:
         """
         Index all supported documents in a folder.

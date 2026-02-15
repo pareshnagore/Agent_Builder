@@ -68,35 +68,66 @@ class OllamaEmbeddingsProvider(EmbeddingsProvider):
 
     def embed_text(self, text: str) -> list[float]:
         """Embed a single text."""
+        return self._embed_batch_internal([text])[0]
+
+    def embed_batch(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        """
+        Embed a batch of texts using Ollama's /api/embed batch endpoint.
+        Uses one HTTP request per batch instead of one per text (much faster).
+        """
         try:
-            import requests
-            payload = {"model": self.model, "prompt": text}
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                all_embeddings.extend(self._embed_batch_internal(batch))
+            return all_embeddings
+        except Exception as e:
+            raise EmbeddingsException(f"Ollama batch embedding failed: {str(e)}")
+
+    def _embed_batch_internal(self, texts: list[str]) -> list[list[float]]:
+        """
+        Call Ollama /api/embed with batch input.
+        Falls back to legacy /api/embeddings if batch endpoint unavailable.
+        """
+        import requests
+
+        # Try batch endpoint first (/api/embed accepts input as array)
+        try:
+            payload = {"model": self.model, "input": texts}
+            timeout = 60 + 5 * len(texts)  # Scale with batch size
             response = requests.post(
-                f"{self.host}api/embeddings",
+                f"{self.host}api/embed",
                 json=payload,
-                timeout=30
+                timeout=timeout,
             )
             response.raise_for_status()
             data = response.json()
-            embedding = data.get("embedding", [])
-            if not embedding:
-                raise EmbeddingsException("No embedding returned from Ollama")
-            return embedding
-        except Exception as e:
-            raise EmbeddingsException(f"Ollama embedding failed: {str(e)}")
-
-    def embed_batch(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
-        """Embed a batch of texts."""
-        try:
-            embeddings = []
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
-                for text in batch:
-                    embedding = self.embed_text(text)
-                    embeddings.append(embedding)
+            # Response: {"embeddings": [[...], [...], ...]}
+            embeddings = data.get("embeddings", [])
+            if len(embeddings) != len(texts):
+                raise EmbeddingsException(
+                    f"Ollama returned {len(embeddings)} embeddings for {len(texts)} inputs"
+                )
             return embeddings
-        except Exception as e:
-            raise EmbeddingsException(f"Batch embedding failed: {str(e)}")
+        except EmbeddingsException:
+            raise
+        except Exception:
+            # Fallback: legacy /api/embeddings (one request per text)
+            embeddings = []
+            for text in texts:
+                payload = {"model": self.model, "prompt": text}
+                response = requests.post(
+                    f"{self.host}api/embeddings",
+                    json=payload,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                data = response.json()
+                emb = data.get("embedding", [])
+                if not emb:
+                    raise EmbeddingsException("No embedding returned from Ollama")
+                embeddings.append(emb)
+            return embeddings
 
     def get_dimension(self) -> int:
         """Get embedding dimension by embedding a test string."""

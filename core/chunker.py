@@ -4,6 +4,7 @@ Implements multiple chunking strategies with token-aware processing.
 Designed for extensibility and use by agents.
 """
 
+import json
 from typing import Literal, Optional, TypedDict
 from abc import ABC, abstractmethod
 import tiktoken
@@ -352,6 +353,11 @@ class Chunker:
             safe_filename = Path(source_file).stem.replace(" ", "_").lower()
             chunk_id = f"{safe_filename}_chunk_{idx:04d}"
 
+            # ChromaDB requires scalar metadata values (no nested dicts).
+            # Serialize custom_tags to JSON string for storage.
+            tags = custom_tags or {}
+            tags_str = json.dumps(tags) if isinstance(tags, dict) else str(tags)
+
             metadata: ChunkMetadata = {
                 "source_file": source_file,
                 "source_type": source_type,
@@ -360,7 +366,7 @@ class Chunker:
                 "chunk_id": chunk_id,
                 "upload_timestamp": upload_timestamp,
                 "document_title": document_title,
-                "custom_tags": custom_tags or {},
+                "custom_tags": tags_str,
             }
 
             result.append((chunk, metadata))

@@ -83,7 +83,8 @@ class RAGEngine:
         persist_dir: str = "data/vector_store",
         state_file: str = "data/ingestion_state.json",
         logs_dir: str = "data/logs",
-        tokenizer_encoding: str = "cl100k_base"
+        tokenizer_encoding: str = "cl100k_base",
+        chunking_strategy: Literal["sliding-window", "sentence-aware", "paragraph"] = "sentence-aware",
     ):
         """
         Initialize RAG Engine.
@@ -95,6 +96,7 @@ class RAGEngine:
             state_file: File for ingestion state tracking
             logs_dir: Directory for query logs
             tokenizer_encoding: Tokenizer for token counting
+            chunking_strategy: "sliding-window", "sentence-aware", or "paragraph"
         """
         # Initialize components
         try:
@@ -114,7 +116,7 @@ class RAGEngine:
             raise RAGException(f"Failed to initialize vector DB: {e}")
 
         try:
-            self.chunker = Chunker(strategy="sentence-aware")
+            self.chunker = Chunker(strategy=chunking_strategy, tokenizer_encoding=tokenizer_encoding)
         except Exception as e:
             raise RAGException(f"Failed to initialize chunker: {e}")
 
@@ -252,30 +254,44 @@ class RAGEngine:
             metadatas = results.get("metadatas", [])
             distances = results.get("distances", [])
 
+            # ChromaDB returns list-of-lists (one per query). Flatten for single-query case.
+            if chunks and isinstance(chunks[0], list):
+                chunks = chunks[0]
+            if metadatas and isinstance(metadatas[0], list):
+                metadatas = metadatas[0]
+            if distances and isinstance(distances[0], list):
+                distances = distances[0]
+
             if not chunks:
                 return []
 
+            # Ensure distances has same length (ChromaDB may omit for some distance metrics)
+            if not distances:
+                distances = [0.0] * len(chunks)
+            elif len(distances) != len(chunks):
+                distances = (distances + [0.0] * len(chunks))[:len(chunks)]
+
             # Apply retrieval policy
             if policy.policy_type == "strict":
-                # Return top-k results
                 results_list = [
                     (chunk, meta)
                     for chunk, meta in zip(chunks[:policy.top_k], metadatas[:policy.top_k])
                 ]
             elif policy.policy_type == "relaxed":
-                # Return results above threshold
                 results_list = [
                     (chunk, meta)
                     for chunk, meta, distance in zip(chunks, metadatas, distances)
                     if (1 - distance) >= policy.similarity_threshold
                 ]
             elif policy.policy_type == "hybrid":
-                # Return top-k AND above threshold
-                results_list = [
-                    (chunk, meta)
-                    for chunk, meta, distance in zip(chunks, metadatas, distances)
-                    if ((1 - distance) >= policy.similarity_threshold) or (len(results_list) < policy.top_k)
-                ]
+                # Include if above threshold OR we haven't filled top_k yet (in distance order)
+                results_list = []
+                for chunk, meta, distance in zip(chunks, metadatas, distances):
+                    sim = 1 - distance
+                    if sim >= policy.similarity_threshold or len(results_list) < policy.top_k:
+                        results_list.append((chunk, meta))
+                    if len(results_list) >= policy.top_k:
+                        break
             else:
                 raise RAGException(f"Unknown policy type: {policy.policy_type}")
 
@@ -313,7 +329,7 @@ class RAGEngine:
                     "source_file": meta.get("source_file", "unknown"),
                     "chunk_id": meta.get("chunk_id", "unknown"),
                     "page_number": meta.get("page_number"),
-                    "custom_tags": meta.get("custom_tags", {}),
+                    "custom_tags": self._parse_custom_tags(meta.get("custom_tags")),
                 }
                 for chunk, meta in results
             ],
@@ -484,6 +500,20 @@ Answer (cite sources):"""
         return result
 
     # ========== UTILITIES ==========
+
+    @staticmethod
+    def _parse_custom_tags(val) -> dict:
+        """Parse custom_tags from metadata (may be JSON string from ChromaDB)."""
+        if val is None:
+            return {}
+        if isinstance(val, dict):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
 
     def get_token_count(self, text: str) -> int:
         """Get token count for text."""
