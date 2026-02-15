@@ -19,5 +19,5 @@ __pycache__/
 *.log
 # OS files
 .DS_Store
-docs/
-.github/
+# docs/
+# .github/
