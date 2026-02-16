@@ -6,8 +6,8 @@ Basic chat application supporting both Ollama and Gemini LLM providers.
 import streamlit as st
 from core.config import Config
 from core.llm import LLMClient, LLMException
-from core.embeddings import EmbeddingsAdapter, EmbeddingsException
-from core.vector_db import VectorDB, VectorDBException
+# from core.embeddings import EmbeddingsAdapter, EmbeddingsException
+# from core.vector_db import VectorDB, VectorDBException
 
 @st.cache_resource
 def initialize_llm():
@@ -19,22 +19,22 @@ def initialize_llm():
         return None
 
 
-def initialize_embeddings(mode: str):
-    """Initialize and return embeddings adapter."""
-    try:
-        return EmbeddingsAdapter(mode=mode)
-    except EmbeddingsException as e:
-        st.error(f"Failed to initialize embeddings: {str(e)}")
-        return None
+# def initialize_embeddings(mode: str):
+#     """Initialize and return embeddings adapter."""
+#     try:
+#         return EmbeddingsAdapter(mode=mode)
+#     except EmbeddingsException as e:
+#         st.error(f"Failed to initialize embeddings: {str(e)}")
+#         return None
 
 
-def initialize_vector_db(embedding_adapter: EmbeddingsAdapter):
-    """Initialize and return vector database."""
-    try:
-        return VectorDB(embedding_adapter=embedding_adapter)
-    except VectorDBException as e:
-        st.error(f"Failed to initialize vector DB: {str(e)}")
-        return None
+# def initialize_vector_db(embedding_adapter: EmbeddingsAdapter):
+#     """Initialize and return vector database."""
+#     try:
+#         return VectorDB(embedding_adapter=embedding_adapter)
+#     except VectorDBException as e:
+#         st.error(f"Failed to initialize vector DB: {str(e)}")
+#         return None
 
 
 # ========== STREAMLIT UI ==========
