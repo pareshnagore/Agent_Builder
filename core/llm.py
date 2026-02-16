@@ -79,15 +79,28 @@ class LLMProvider(ABC):
 class OllamaProvider(LLMProvider):
     """Ollama LLM Provider."""
 
-    def __init__(self, host: str = None):
-        self.host = host or Config.OLLAMA_HOST
+    def __init__(self, host: str = None, api_key: str = None, use_cloud: bool = False):
+        # Determine if using cloud or local
+        if use_cloud and Config.OLLAMA_CLOUD_ENABLED:
+            self.host = Config.OLLAMA_CLOUD_HOST
+            self.api_key = Config.OLLAMA_API_KEY
+            self.is_cloud = True
+        else:
+            self.host = host or Config.OLLAMA_HOST
+            self.api_key = None
+            self.is_cloud = False
+        
         if not self.host.endswith("/"):
             self.host += "/"
 
     def list_models(self) -> list[str]:
         """Fetch available models from Ollama."""
         try:
-            response = requests.get(f"{self.host}api/tags", timeout=5)
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            # print(f"Fetching models from Ollama at {self.host}api/tags")
+            response = requests.get(f"{self.host}api/tags", headers=headers, timeout=15)
             response.raise_for_status()
             data = response.json()
             return [model["name"] for model in data.get("models", [])]
@@ -97,6 +110,11 @@ class OllamaProvider(LLMProvider):
             raise LLMException(f"Unexpected error fetching Ollama models: {str(e)}")
 
     def chat(self, model: str, messages: list[dict], **kwargs) -> str:
+        # Add Authorization header if cloud
+        headers = {}
+        if self.is_cloud and self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         """Send a chat request to Ollama."""
         try:
             payload = {
@@ -111,6 +129,7 @@ class OllamaProvider(LLMProvider):
             response = requests.post(
                 url,
                 json=payload,
+                headers=headers,
                 timeout=30
             )
             
@@ -249,11 +268,12 @@ class LLMClient:
 
     def __init__(self):
         self.providers = {
-            "ollama": OllamaProvider(),
+            "ollama": OllamaProvider(use_cloud=False),
+            "ollama-cloud": OllamaProvider(use_cloud=True) if Config.OLLAMA_CLOUD_ENABLED else None,
             "gemini": GeminiProvider() if Config.GEMINI_API_KEY else None,
         }
 
-    def list_models(self, provider: Literal["ollama", "gemini"]) -> list[str]:
+    def list_models(self, provider: Literal["ollama", "ollama-cloud", "gemini"]) -> list[str]:
         """Get available models for a provider."""
         if provider not in self.providers or self.providers[provider] is None:
             raise LLMException(f"Provider '{provider}' not available or not configured")
@@ -261,7 +281,7 @@ class LLMClient:
 
     def chat(
         self,
-        provider: Literal["ollama", "gemini"],
+        provider: Literal["ollama", "ollama-cloud", "gemini"],
         model: str,
         messages: list[dict],
         **kwargs
@@ -270,7 +290,7 @@ class LLMClient:
         Send a chat request to the specified provider.
         
         Args:
-            provider: "ollama" or "gemini"
+            provider: "ollama", "ollama-cloud" or "gemini"
             model: Model name (e.g., "gemma2:2b" for Ollama, "gemini-2.0-flash" for Gemini)
             messages: List of message dicts with "role" and "content" keys
             **kwargs: Additional options (e.g., temperature, top_p)
@@ -290,6 +310,10 @@ class LLMClient:
         """Convenience method to list Ollama models."""
         return self.list_models("ollama")
 
+    def list_ollama_cloud_models(self) -> list[str]:
+        """Convenience method to list Ollama Cloud models."""
+        return self.list_models("ollama-cloud")
+
     def list_gemini_models(self) -> list[str]:
         """Convenience method to list Gemini models."""
         return self.list_models("gemini")
@@ -297,6 +321,10 @@ class LLMClient:
     def chat_ollama(self, model: str, messages: list[dict], **kwargs) -> str:
         """Convenience method for Ollama chat."""
         return self.chat("ollama", model, messages, **kwargs)
+    
+    def chat_ollama_cloud(self, model: str, messages: list[dict], **kwargs) -> str:
+        """Convenience method for Ollama Cloud chat."""
+        return self.chat("ollama-cloud", model, messages, **kwargs)
 
     def chat_gemini(self, model: str, messages: list[dict], **kwargs) -> str:
         """Convenience method for Gemini chat."""

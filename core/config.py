@@ -33,6 +33,9 @@ class Config:
     # LLM Configuration
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    OLLAMA_CLOUD_ENABLED = os.getenv("OLLAMA_CLOUD_ENABLED", "false").lower() == "true"
+    OLLAMA_CLOUD_HOST = os.getenv("OLLAMA_CLOUD_HOST", "")
+    OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
     
     OLLAMA_MODELS: list[str] = [
         "gemma2:2b",
