@@ -150,6 +150,45 @@ class OllamaProvider(LLMProvider):
         except Exception as e:
             raise LLMException(f"Unexpected error in Ollama chat: {str(e)}")
 
+    def chat_stream(self, model: str, messages: list[dict], **kwargs):
+        """Send a chat request to Ollama and stream the response."""
+        try:
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": True,  # Enable streaming
+            }
+            payload.update(kwargs)
+    
+            url = f"{self.host}api/chat"
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=30,
+                stream=True  # Important for streaming
+            )
+            
+            if response.status_code != 200:
+                raise LLMException(f"Ollama API error ({response.status_code}): {response.text}")
+            
+            # Stream response line by line
+            for line in response.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    content = data.get("message", {}).get("content", "")
+                    if content:
+                        yield content
+                        
+        except requests.RequestException as e:
+            raise LLMException(f"Ollama chat stream failed: {str(e)}")
+        except Exception as e:
+            raise LLMException(f"Unexpected error in Ollama chat stream: {str(e)}")
+
 
 class GeminiProvider(LLMProvider):
     """Google Gemini LLM Provider."""
@@ -256,7 +295,86 @@ class GeminiProvider(LLMProvider):
         except Exception as e:
             raise LLMException(f"Gemini chat request failed: {str(e)}")
 
+    def chat_stream(self, model: str, messages: list[dict], **kwargs):
+        """Send a chat request to Gemini and stream the response."""
+        try:
+            from google.genai import types
+            
+            system_prompt = None
+            content_messages = []
+            
+            for msg in messages:
+                role = msg.get("role")
+                content = msg.get("content")
+                
+                if not role or not content:
+                    continue
+                
+                if role == "system":
+                    system_prompt = content
+                else:
+                    gemini_role = "model" if role == "assistant" else role
+                    content_messages.append({
+                        "role": gemini_role,
+                        "parts": [{"text": content}]
+                    })
+            
+            if not content_messages:
+                raise LLMException("No valid messages to send to Gemini")
+            
+            config_dict = {}
+            if system_prompt:
+                config_dict["system_instruction"] = system_prompt
+            config_dict.update(kwargs)
+            
+            config = types.GenerateContentConfig(**config_dict) if config_dict else None
+            
+            # Stream response
+            response = self.client.models.generate_content(
+                model=model,
+                contents=content_messages,
+                config=config,
+                stream=True  # Enable streaming
+            )
+            
+            # Yield text chunks as they arrive
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+                    
+        except LLMException:
+            raise
+        except Exception as e:
+            raise LLMException(f"Gemini chat stream failed: {str(e)}")
 
+def chat_stream(
+    self,
+    provider: Literal["ollama", "ollama-cloud", "gemini"],
+    model: str,
+    messages: list[dict],
+    **kwargs
+):
+    """
+    Send a chat request and stream the response.
+    
+    Yields response text chunks as they arrive.
+    """
+    if provider not in self.providers or self.providers[provider] is None:
+        raise LLMException(f"Provider '{provider}' not available or not configured")
+    
+    return self.providers[provider].chat_stream(model, messages, **kwargs)
+
+def chat_ollama_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Ollama chat."""
+    return self.chat_stream("ollama", model, messages, **kwargs)
+
+def chat_ollama_cloud_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Ollama Cloud chat."""
+    return self.chat_stream("ollama-cloud", model, messages, **kwargs)
+
+def chat_gemini_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Gemini chat."""
+    return self.chat_stream("gemini", model, messages, **kwargs)
 class LLMClient:
     """
     Unified LLM client supporting multiple providers.
@@ -329,3 +447,32 @@ class LLMClient:
     def chat_gemini(self, model: str, messages: list[dict], **kwargs) -> str:
         """Convenience method for Gemini chat."""
         return self.chat("gemini", model, messages, **kwargs)
+    
+    def chat_stream(
+        self,
+        provider: Literal["ollama", "ollama-cloud", "gemini"],
+        model: str,
+        messages: list[dict],
+        **kwargs
+    ):
+        """
+        Send a chat request and stream the response.
+        
+        Yields response text chunks as they arrive.
+        """
+        if provider not in self.providers or self.providers[provider] is None:
+            raise LLMException(f"Provider '{provider}' not available or not configured")
+        
+        return self.providers[provider].chat_stream(model, messages, **kwargs)
+    
+    def chat_ollama_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Ollama chat."""
+        return self.chat_stream("ollama", model, messages, **kwargs)
+    
+    def chat_ollama_cloud_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Ollama Cloud chat."""
+        return self.chat_stream("ollama-cloud", model, messages, **kwargs)
+    
+    def chat_gemini_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Gemini chat."""
+        return self.chat_stream("gemini", model, messages, **kwargs)
