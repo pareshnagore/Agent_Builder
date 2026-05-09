@@ -10,6 +10,7 @@ tavily-python>=0.7.12
 textstat
 # vertexai
 
+numpy<2.0.0
 streamlit
 ollama
 chromadb==0.4.24
