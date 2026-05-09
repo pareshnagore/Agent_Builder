@@ -2,6 +2,7 @@ import uuid
 import tiktoken
 import nltk
 from core.vector_db import VectorDB
+from core.config import Config
 
 # Download sentence tokenizer once
 nltk.download("punkt", quiet=True)
@@ -12,6 +13,7 @@ class RAGEngine:
     def __init__(self, embed_model="mxbai-embed-large"):
         print("RAGEngine initialized with model:", embed_model)
         self.vectordb = VectorDB(embed_model=embed_model)
+        self.embed_model = embed_model
         # Use a general tokenizer – works well for most LLMs
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -19,6 +21,28 @@ class RAGEngine:
 
     def token_count(self, text):
         return len(self.tokenizer.encode(text))
+    
+    def get_embedding_context_length(self) -> int:
+        """Get the context length limit for the embedding model."""
+        if self.embed_model in Config.EMBEDDING_MODEL_CONTEXT_LENGTHS:
+            return Config.EMBEDDING_MODEL_CONTEXT_LENGTHS[self.embed_model]
+        return Config.DEFAULT_EMBEDDING_CONTEXT_LENGTH
+    
+    def truncate_for_embedding(self, text: str) -> str:
+        """
+        Truncate text to fit within the embedding model's context window.
+        This prevents 'input length exceeds context length' errors.
+        """
+        max_tokens = self.get_embedding_context_length()
+        current_tokens = self.token_count(text)
+        
+        if current_tokens <= max_tokens:
+            return text
+        
+        # Truncate to fit within context
+        encoded = self.tokenizer.encode(text)
+        truncated = self.tokenizer.decode(encoded[:max_tokens])
+        return truncated
 
     def chunk_text(self, text, max_tokens=400, overlap_tokens=50):
         """
@@ -87,9 +111,11 @@ class RAGEngine:
     # -------- RETRIEVAL ---------
 
     def retrieve(self, query, top_k=3):
-
+        # Truncate query to fit within embedding model's context window
+        truncated_query = self.truncate_for_embedding(query)
+        
         results = self.vectordb.search(
-            query_text=query,
+            query_text=truncated_query,
             n_results=top_k
         )
         documents = results.get("documents", [[]])[0]

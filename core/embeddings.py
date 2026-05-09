@@ -1,21 +1,47 @@
 import ollama
+import tiktoken
+from core.config import Config
 
 
 class EmbeddingModel:
 
     def __init__(self, model="mxbai-embed-large"):
         self.model = model
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
     def list_models(self):
         return [
             "mxbai-embed-large",
             "embeddinggemma:latest"
         ]
+    
+    def get_context_length(self) -> int:
+        """Get the context length for this embedding model."""
+        if self.model in Config.EMBEDDING_MODEL_CONTEXT_LENGTHS:
+            return Config.EMBEDDING_MODEL_CONTEXT_LENGTHS[self.model]
+        return Config.DEFAULT_EMBEDDING_CONTEXT_LENGTH
+    
+    def truncate_text(self, text: str) -> str:
+        """Truncate text to fit within embedding model's context window."""
+        max_tokens = self.get_context_length()
+        try:
+            encoded = self.tokenizer.encode(text)
+            if len(encoded) <= max_tokens:
+                return text
+            # Truncate to fit
+            truncated = self.tokenizer.decode(encoded[:max_tokens])
+            return truncated
+        except Exception:
+            # Fallback: simple character-based truncation
+            max_chars = max_tokens * 4
+            return text[:max_chars]
 
     def embed(self, text):
+        # Truncate text to fit within embedding model's context
+        truncated_text = self.truncate_text(text)
         response = ollama.embeddings(
             model=self.model,
-            prompt=text
+            prompt=truncated_text
         )
 
         return response["embedding"]

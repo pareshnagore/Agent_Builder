@@ -109,6 +109,62 @@ class OllamaProvider(LLMProvider):
         except Exception as e:
             raise LLMException(f"Unexpected error fetching Ollama models: {str(e)}")
 
+    def get_model_info(self, model: str) -> dict:
+        """
+        Get detailed information about a model including context window.
+        Falls back to configured defaults if model info is not available.
+        """
+        try:
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            # Try to get model info from Ollama
+            response = requests.post(
+                f"{self.host}api/show",
+                json={"name": model},
+                headers=headers,
+                timeout=15
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract context window from model parameters if available
+            model_info = {
+                "name": model,
+                "context_window": None,
+            }
+            
+            # Check if num_ctx is in the model details
+            if "details" in data and "parameter_size" in data["details"]:
+                model_info["details"] = data["details"]
+            
+            return model_info
+        except Exception:
+            # If model info fails, return empty details
+            return {
+                "name": model,
+                "context_window": None,
+                "details": None
+            }
+
+    def get_context_length(self, model: str) -> int:
+        """
+        Get the context length for a model.
+        Returns the configured context length or the default.
+        """
+        # Check if model is in the config mapping
+        if model in Config.OLLAMA_MODEL_CONTEXT_LENGTHS:
+            return Config.OLLAMA_MODEL_CONTEXT_LENGTHS[model]
+        
+        # Also check without version number (e.g., "gemma2:2b" -> "gemma2")
+        model_base = model.split(":")[0]
+        if model_base in Config.OLLAMA_MODEL_CONTEXT_LENGTHS:
+            return Config.OLLAMA_MODEL_CONTEXT_LENGTHS[model_base]
+        
+        # Return default
+        return Config.DEFAULT_OLLAMA_CONTEXT_LENGTH
+
     def chat(self, model: str, messages: list[dict], **kwargs) -> str:
         # Add Authorization header if cloud
         headers = {}
@@ -476,3 +532,24 @@ class LLMClient:
     def chat_gemini_stream(self, model: str, messages: list[dict], **kwargs):
         """Convenience method for streaming Gemini chat."""
         return self.chat_stream("gemini", model, messages, **kwargs)
+
+    def get_ollama_context_length(self, model: str) -> int:
+        """Get context length for an Ollama model."""
+        provider = self.providers.get("ollama")
+        if provider is None:
+            raise LLMException("Ollama provider not available")
+        return provider.get_context_length(model)
+    
+    def get_ollama_cloud_context_length(self, model: str) -> int:
+        """Get context length for an Ollama Cloud model."""
+        provider = self.providers.get("ollama-cloud")
+        if provider is None:
+            raise LLMException("Ollama Cloud provider not available or not configured")
+        return provider.get_context_length(model)
+    
+    def get_ollama_model_info(self, model: str) -> dict:
+        """Get detailed info for an Ollama model."""
+        provider = self.providers.get("ollama")
+        if provider is None:
+            raise LLMException("Ollama provider not available")
+        return provider.get_model_info(model)

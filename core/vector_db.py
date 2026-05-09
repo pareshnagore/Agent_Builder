@@ -1,21 +1,53 @@
 import chromadb
 from chromadb.api.types import EmbeddingFunction
 import ollama
+import tiktoken
+from core.config import Config
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
 
     def __init__(self, model="mxbai-embed-large"):
         self.model = model
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+    
+    def get_context_length(self) -> int:
+        """Get the context length for this embedding model."""
+        if self.model in Config.EMBEDDING_MODEL_CONTEXT_LENGTHS:
+            return Config.EMBEDDING_MODEL_CONTEXT_LENGTHS[self.model]
+        return Config.DEFAULT_EMBEDDING_CONTEXT_LENGTH
+    
+    def truncate_text(self, text: str) -> str:
+        """Truncate text to fit within embedding model's context window."""
+        max_tokens = self.get_context_length()
+        try:
+            encoded = self.tokenizer.encode(text)
+            if len(encoded) <= max_tokens:
+                return text
+            # Truncate to fit
+            truncated = self.tokenizer.decode(encoded[:max_tokens])
+            return truncated
+        except Exception:
+            # Fallback: simple character-based truncation
+            # Estimate ~4 chars per token
+            max_chars = max_tokens * 4
+            return text[:max_chars]
 
     def __call__(self, input):
         embeddings = []
         for text in input:
-            response = ollama.embeddings(
-                model=self.model,
-                prompt=text
-            )
-            embeddings.append(response["embedding"])
+            # Truncate text to fit within embedding model's context
+            truncated_text = self.truncate_text(text)
+            try:
+                response = ollama.embeddings(
+                    model=self.model,
+                    prompt=truncated_text
+                )
+                embeddings.append(response["embedding"])
+            except Exception as e:
+                print(f"Warning: Failed to embed text, using zero vector: {str(e)}")
+                # Fallback: return zero vector of appropriate dimension
+                embeddings.append([0.0] * 1024)  # Generic dimension
         return embeddings
 
 

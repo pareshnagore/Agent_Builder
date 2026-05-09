@@ -1,11 +1,13 @@
 # Python venv
 venv/
+.venv/
 .env
 *.env
 # Data folders
 data/uploads/
 data/vector_store/
 db/
+data/
 # Secrets
 *.sqlite3
 *.key
@@ -17,3 +19,9 @@ __pycache__/
 *.log
 # OS files
 .DS_Store
+.cursor/
+.github/
+docs/
+core/__pycache__/
+
+
