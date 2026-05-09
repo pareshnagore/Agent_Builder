@@ -79,15 +79,28 @@ class LLMProvider(ABC):
 class OllamaProvider(LLMProvider):
     """Ollama LLM Provider."""
 
-    def __init__(self, host: str = None):
-        self.host = host or Config.OLLAMA_HOST
+    def __init__(self, host: str = None, api_key: str = None, use_cloud: bool = False):
+        # Determine if using cloud or local
+        if use_cloud and Config.OLLAMA_CLOUD_ENABLED:
+            self.host = Config.OLLAMA_CLOUD_HOST
+            self.api_key = Config.OLLAMA_API_KEY
+            self.is_cloud = True
+        else:
+            self.host = host or Config.OLLAMA_HOST
+            self.api_key = None
+            self.is_cloud = False
+        
         if not self.host.endswith("/"):
             self.host += "/"
 
     def list_models(self) -> list[str]:
         """Fetch available models from Ollama."""
         try:
-            response = requests.get(f"{self.host}api/tags", timeout=5)
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            # print(f"Fetching models from Ollama at {self.host}api/tags")
+            response = requests.get(f"{self.host}api/tags", headers=headers, timeout=15)
             response.raise_for_status()
             data = response.json()
             return [model["name"] for model in data.get("models", [])]
@@ -96,7 +109,68 @@ class OllamaProvider(LLMProvider):
         except Exception as e:
             raise LLMException(f"Unexpected error fetching Ollama models: {str(e)}")
 
+    def get_model_info(self, model: str) -> dict:
+        """
+        Get detailed information about a model including context window.
+        Falls back to configured defaults if model info is not available.
+        """
+        try:
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            # Try to get model info from Ollama
+            response = requests.post(
+                f"{self.host}api/show",
+                json={"name": model},
+                headers=headers,
+                timeout=15
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract context window from model parameters if available
+            model_info = {
+                "name": model,
+                "context_window": None,
+            }
+            
+            # Check if num_ctx is in the model details
+            if "details" in data and "parameter_size" in data["details"]:
+                model_info["details"] = data["details"]
+            
+            return model_info
+        except Exception:
+            # If model info fails, return empty details
+            return {
+                "name": model,
+                "context_window": None,
+                "details": None
+            }
+
+    def get_context_length(self, model: str) -> int:
+        """
+        Get the context length for a model.
+        Returns the configured context length or the default.
+        """
+        # Check if model is in the config mapping
+        if model in Config.OLLAMA_MODEL_CONTEXT_LENGTHS:
+            return Config.OLLAMA_MODEL_CONTEXT_LENGTHS[model]
+        
+        # Also check without version number (e.g., "gemma2:2b" -> "gemma2")
+        model_base = model.split(":")[0]
+        if model_base in Config.OLLAMA_MODEL_CONTEXT_LENGTHS:
+            return Config.OLLAMA_MODEL_CONTEXT_LENGTHS[model_base]
+        
+        # Return default
+        return Config.DEFAULT_OLLAMA_CONTEXT_LENGTH
+
     def chat(self, model: str, messages: list[dict], **kwargs) -> str:
+        # Add Authorization header if cloud
+        headers = {}
+        if self.is_cloud and self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         """Send a chat request to Ollama."""
         try:
             payload = {
@@ -111,6 +185,7 @@ class OllamaProvider(LLMProvider):
             response = requests.post(
                 url,
                 json=payload,
+                headers=headers,
                 timeout=30
             )
             
@@ -130,6 +205,45 @@ class OllamaProvider(LLMProvider):
             raise LLMException(f"Ollama chat request failed: {str(e)}")
         except Exception as e:
             raise LLMException(f"Unexpected error in Ollama chat: {str(e)}")
+
+    def chat_stream(self, model: str, messages: list[dict], **kwargs):
+        """Send a chat request to Ollama and stream the response."""
+        try:
+            headers = {}
+            if self.is_cloud and self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": True,  # Enable streaming
+            }
+            payload.update(kwargs)
+    
+            url = f"{self.host}api/chat"
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=30,
+                stream=True  # Important for streaming
+            )
+            
+            if response.status_code != 200:
+                raise LLMException(f"Ollama API error ({response.status_code}): {response.text}")
+            
+            # Stream response line by line
+            for line in response.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    content = data.get("message", {}).get("content", "")
+                    if content:
+                        yield content
+                        
+        except requests.RequestException as e:
+            raise LLMException(f"Ollama chat stream failed: {str(e)}")
+        except Exception as e:
+            raise LLMException(f"Unexpected error in Ollama chat stream: {str(e)}")
 
 
 class GeminiProvider(LLMProvider):
@@ -237,7 +351,86 @@ class GeminiProvider(LLMProvider):
         except Exception as e:
             raise LLMException(f"Gemini chat request failed: {str(e)}")
 
+    def chat_stream(self, model: str, messages: list[dict], **kwargs):
+        """Send a chat request to Gemini and stream the response."""
+        try:
+            from google.genai import types
+            
+            system_prompt = None
+            content_messages = []
+            
+            for msg in messages:
+                role = msg.get("role")
+                content = msg.get("content")
+                
+                if not role or not content:
+                    continue
+                
+                if role == "system":
+                    system_prompt = content
+                else:
+                    gemini_role = "model" if role == "assistant" else role
+                    content_messages.append({
+                        "role": gemini_role,
+                        "parts": [{"text": content}]
+                    })
+            
+            if not content_messages:
+                raise LLMException("No valid messages to send to Gemini")
+            
+            config_dict = {}
+            if system_prompt:
+                config_dict["system_instruction"] = system_prompt
+            config_dict.update(kwargs)
+            
+            config = types.GenerateContentConfig(**config_dict) if config_dict else None
+            
+            # Stream response
+            response = self.client.models.generate_content(
+                model=model,
+                contents=content_messages,
+                config=config,
+                stream=True  # Enable streaming
+            )
+            
+            # Yield text chunks as they arrive
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+                    
+        except LLMException:
+            raise
+        except Exception as e:
+            raise LLMException(f"Gemini chat stream failed: {str(e)}")
 
+def chat_stream(
+    self,
+    provider: Literal["ollama", "ollama-cloud", "gemini"],
+    model: str,
+    messages: list[dict],
+    **kwargs
+):
+    """
+    Send a chat request and stream the response.
+    
+    Yields response text chunks as they arrive.
+    """
+    if provider not in self.providers or self.providers[provider] is None:
+        raise LLMException(f"Provider '{provider}' not available or not configured")
+    
+    return self.providers[provider].chat_stream(model, messages, **kwargs)
+
+def chat_ollama_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Ollama chat."""
+    return self.chat_stream("ollama", model, messages, **kwargs)
+
+def chat_ollama_cloud_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Ollama Cloud chat."""
+    return self.chat_stream("ollama-cloud", model, messages, **kwargs)
+
+def chat_gemini_stream(self, model: str, messages: list[dict], **kwargs):
+    """Convenience method for streaming Gemini chat."""
+    return self.chat_stream("gemini", model, messages, **kwargs)
 class LLMClient:
     """
     Unified LLM client supporting multiple providers.
@@ -249,11 +442,12 @@ class LLMClient:
 
     def __init__(self):
         self.providers = {
-            "ollama": OllamaProvider(),
+            "ollama": OllamaProvider(use_cloud=False),
+            "ollama-cloud": OllamaProvider(use_cloud=True) if Config.OLLAMA_CLOUD_ENABLED else None,
             "gemini": GeminiProvider() if Config.GEMINI_API_KEY else None,
         }
 
-    def list_models(self, provider: Literal["ollama", "gemini"]) -> list[str]:
+    def list_models(self, provider: Literal["ollama", "ollama-cloud", "gemini"]) -> list[str]:
         """Get available models for a provider."""
         if provider not in self.providers or self.providers[provider] is None:
             raise LLMException(f"Provider '{provider}' not available or not configured")
@@ -261,7 +455,7 @@ class LLMClient:
 
     def chat(
         self,
-        provider: Literal["ollama", "gemini"],
+        provider: Literal["ollama", "ollama-cloud", "gemini"],
         model: str,
         messages: list[dict],
         **kwargs
@@ -270,7 +464,7 @@ class LLMClient:
         Send a chat request to the specified provider.
         
         Args:
-            provider: "ollama" or "gemini"
+            provider: "ollama", "ollama-cloud" or "gemini"
             model: Model name (e.g., "gemma2:2b" for Ollama, "gemini-2.0-flash" for Gemini)
             messages: List of message dicts with "role" and "content" keys
             **kwargs: Additional options (e.g., temperature, top_p)
@@ -290,6 +484,10 @@ class LLMClient:
         """Convenience method to list Ollama models."""
         return self.list_models("ollama")
 
+    def list_ollama_cloud_models(self) -> list[str]:
+        """Convenience method to list Ollama Cloud models."""
+        return self.list_models("ollama-cloud")
+
     def list_gemini_models(self) -> list[str]:
         """Convenience method to list Gemini models."""
         return self.list_models("gemini")
@@ -297,7 +495,61 @@ class LLMClient:
     def chat_ollama(self, model: str, messages: list[dict], **kwargs) -> str:
         """Convenience method for Ollama chat."""
         return self.chat("ollama", model, messages, **kwargs)
+    
+    def chat_ollama_cloud(self, model: str, messages: list[dict], **kwargs) -> str:
+        """Convenience method for Ollama Cloud chat."""
+        return self.chat("ollama-cloud", model, messages, **kwargs)
 
     def chat_gemini(self, model: str, messages: list[dict], **kwargs) -> str:
         """Convenience method for Gemini chat."""
         return self.chat("gemini", model, messages, **kwargs)
+    
+    def chat_stream(
+        self,
+        provider: Literal["ollama", "ollama-cloud", "gemini"],
+        model: str,
+        messages: list[dict],
+        **kwargs
+    ):
+        """
+        Send a chat request and stream the response.
+        
+        Yields response text chunks as they arrive.
+        """
+        if provider not in self.providers or self.providers[provider] is None:
+            raise LLMException(f"Provider '{provider}' not available or not configured")
+        
+        return self.providers[provider].chat_stream(model, messages, **kwargs)
+    
+    def chat_ollama_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Ollama chat."""
+        return self.chat_stream("ollama", model, messages, **kwargs)
+    
+    def chat_ollama_cloud_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Ollama Cloud chat."""
+        return self.chat_stream("ollama-cloud", model, messages, **kwargs)
+    
+    def chat_gemini_stream(self, model: str, messages: list[dict], **kwargs):
+        """Convenience method for streaming Gemini chat."""
+        return self.chat_stream("gemini", model, messages, **kwargs)
+
+    def get_ollama_context_length(self, model: str) -> int:
+        """Get context length for an Ollama model."""
+        provider = self.providers.get("ollama")
+        if provider is None:
+            raise LLMException("Ollama provider not available")
+        return provider.get_context_length(model)
+    
+    def get_ollama_cloud_context_length(self, model: str) -> int:
+        """Get context length for an Ollama Cloud model."""
+        provider = self.providers.get("ollama-cloud")
+        if provider is None:
+            raise LLMException("Ollama Cloud provider not available or not configured")
+        return provider.get_context_length(model)
+    
+    def get_ollama_model_info(self, model: str) -> dict:
+        """Get detailed info for an Ollama model."""
+        provider = self.providers.get("ollama")
+        if provider is None:
+            raise LLMException("Ollama provider not available")
+        return provider.get_model_info(model)

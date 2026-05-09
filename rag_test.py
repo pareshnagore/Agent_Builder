@@ -82,40 +82,6 @@ system_prompt = st.sidebar.text_area(
     key="system_prompt"
 )
 
-# Context Length (for Ollama models)
-context_length = None
-if provider in ["Ollama", "Ollama Cloud"]:
-    try:
-        # Get recommended context length for the selected model
-        get_context_fn = (
-            llm.get_ollama_context_length if provider == "Ollama"
-            else llm.get_ollama_cloud_context_length
-        )
-        default_context = get_context_fn(llm_model)
-        
-        context_length = st.sidebar.slider(
-            "Context Length (tokens)",
-            min_value=512,
-            max_value=32768,
-            value=default_context,
-            step=512,
-            help=f"Maximum tokens for model context. Model default: {default_context}",
-            key="context_length"
-        )
-    except LLMException as e:
-        st.sidebar.warning(f"Could not determine model context length: {str(e)}")
-        context_length = 8192  # Fallback default
-    except Exception as e:
-        st.sidebar.warning(f"Context length setup error: {str(e)}")
-        context_length = 8192
-
-# Enable/Disable Streaming
-enable_streaming = st.sidebar.checkbox(
-    "Enable Streaming Response",
-    value=True,
-    key="enable_streaming"
-)
-
 # ========== EMBEDDINGS CONFIGURATION ==========
 st.sidebar.subheader("Embeddings Configuration")
 
@@ -193,80 +159,43 @@ if prompt:
     context = rag.retrieve(prompt)
 
     # Build final prompt with context
-    system_with_context = f"""{system_prompt}
-    You have access to the following relevant documents:
+    final_prompt = f"""
+Use the following context to answer the question:
 
-    {context}
+{context}
 
-    Use this information to answer questions about the conversation if relevant, else answer based on your general knowledge."""
+Question: {prompt}
+"""
 
     # Prepare messages for LLM
     messages = [
-        {"role": "system", "content": system_with_context}
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": final_prompt}
     ]
-    
-    for msg in st.session_state.messages:  
-        messages.append(msg)
 
     # Get response from selected LLM provider
-    reply = ""  # Initialize reply to avoid unbound variable errors
     try:
         with st.spinner(f"Getting response from {provider}..."):
-            # Prepare additional options for Ollama models
-            llm_options = {}
-            if context_length is not None and provider in ["Ollama", "Ollama Cloud"]:
-                llm_options["num_ctx"] = context_length
-            
-            if enable_streaming:
-                # Streaming response
-                response_placeholder = st.empty()
-                full_response = ""
-                
-                if provider == "Ollama":
-                    stream = llm.chat_ollama_stream(llm_model, messages, **llm_options)
-                elif provider == "Ollama Cloud":
-                    stream = llm.chat_ollama_cloud_stream(llm_model, messages, **llm_options)
-                else:  # Gemini
-                    if not Config.GEMINI_API_KEY:
-                        reply = "Error: GEMINI_API_KEY not set. Please configure it in .env file."
-                        stream = None
-                    else:
-                        stream = llm.chat_gemini_stream(llm_model, messages, **llm_options)
-                
-                if stream:
-                    with st.chat_message("assistant"):
-                        for chunk in stream:
-                            full_response += chunk
-                            response_placeholder.write(full_response)
-                    reply = full_response
-            else:
-                # Non-streaming response (original behavior)
-                if provider == "Ollama":
-                    reply = llm.chat_ollama(llm_model, messages, **llm_options)
-                elif provider == "Ollama Cloud":
-                    reply = llm.chat_ollama_cloud(llm_model, messages, **llm_options)
-                else:  # Gemini
-                    if not Config.GEMINI_API_KEY:
-                        reply = "Error: GEMINI_API_KEY not set. Please configure it in .env file."
-                    else:
-                        reply = llm.chat_gemini(llm_model, messages, **llm_options)
-                
-                with st.chat_message("assistant"):
-                    st.write(reply)
-                    
+            if provider == "Ollama":
+                reply = llm.chat_ollama(llm_model, messages)
+            elif provider == "Ollama Cloud":
+                reply = llm.chat_ollama_cloud(llm_model, messages)
+            else:  # Gemini
+                if not Config.GEMINI_API_KEY:
+                    reply = "Error: GEMINI_API_KEY not set. Please configure it in .env file."
+                else:
+                    reply = llm.chat_gemini(llm_model, messages)
     except LLMException as e:
         reply = f"Error: Failed to get response from {provider}: {str(e)}"
-        st.error(reply)
     except Exception as e:
         reply = f"Unexpected error: {str(e)}"
-        st.error(reply)
 
     # Add assistant message to chat history
     st.session_state.messages.append({"role": "assistant", "content": reply})
     
     # Display assistant message
-    # with st.chat_message("assistant"):
-    #     st.write(reply)
+    with st.chat_message("assistant"):
+        st.write(reply)
 
 # ========== FOOTER ==========
 st.divider()

@@ -6,10 +6,10 @@ Basic chat application supporting both Ollama and Gemini LLM providers.
 import streamlit as st
 from core.config import Config
 from core.llm import LLMClient, LLMException
-from core.embeddings import EmbeddingsAdapter, EmbeddingsException
-from core.vector_db import VectorDB, VectorDBException
+# from core.embeddings import EmbeddingsAdapter, EmbeddingsException
+# from core.vector_db import VectorDB, VectorDBException
 
-
+@st.cache_resource
 def initialize_llm():
     """Initialize and return LLM client."""
     try:
@@ -19,22 +19,22 @@ def initialize_llm():
         return None
 
 
-def initialize_embeddings(mode: str):
-    """Initialize and return embeddings adapter."""
-    try:
-        return EmbeddingsAdapter(mode=mode)
-    except EmbeddingsException as e:
-        st.error(f"Failed to initialize embeddings: {str(e)}")
-        return None
+# def initialize_embeddings(mode: str):
+#     """Initialize and return embeddings adapter."""
+#     try:
+#         return EmbeddingsAdapter(mode=mode)
+#     except EmbeddingsException as e:
+#         st.error(f"Failed to initialize embeddings: {str(e)}")
+#         return None
 
 
-def initialize_vector_db(embedding_adapter: EmbeddingsAdapter):
-    """Initialize and return vector database."""
-    try:
-        return VectorDB(embedding_adapter=embedding_adapter)
-    except VectorDBException as e:
-        st.error(f"Failed to initialize vector DB: {str(e)}")
-        return None
+# def initialize_vector_db(embedding_adapter: EmbeddingsAdapter):
+#     """Initialize and return vector database."""
+#     try:
+#         return VectorDB(embedding_adapter=embedding_adapter)
+#     except VectorDBException as e:
+#         st.error(f"Failed to initialize vector DB: {str(e)}")
+#         return None
 
 
 # ========== STREAMLIT UI ==========
@@ -45,9 +45,14 @@ st.sidebar.header("Settings")
 
 # LLM Provider Selection
 st.sidebar.subheader("LLM Configuration")
+provider_options = ["Ollama"]
+if Config.OLLAMA_CLOUD_ENABLED:
+    provider_options.append("Ollama Cloud")
+provider_options.append("Gemini")
+
 provider = st.sidebar.selectbox(
     "Choose LLM Provider",
-    ["Ollama", "Gemini"],
+    provider_options,
     key="llm_provider"
 )
 
@@ -66,6 +71,15 @@ try:
             "Choose Ollama Model (Chat)",
             chat_models if chat_models else ["gemma2:2b"],
             key="ollama_llm_model"
+        )
+    elif provider == "Ollama Cloud":
+        available_models = llm.list_models("ollama-cloud")
+        # Filter out embedding models
+        chat_models = [m for m in available_models if "embed" not in m.lower()]
+        llm_model = st.sidebar.selectbox(
+            "Choose Ollama Cloud Model (Chat)",
+            chat_models if chat_models else ["mistral"],
+            key="ollama_cloud_llm_model"
         )
     else:
         available_models = llm.list_gemini_models()
@@ -171,8 +185,10 @@ if prompt:
     # Get response from LLM
     try:
         with st.spinner(f"Getting response from {provider}..."):
-            if provider == "Ollama":
+            if provider == "Ollama" :
                 reply = llm.chat_ollama(llm_model, messages)
+            elif provider == "Ollama Cloud":
+                reply = llm.chat_ollama_cloud(llm_model, messages)
             else:
                 if not Config.GEMINI_API_KEY:
                     reply = "Error: GEMINI_API_KEY not set. Please configure it in .env file."

@@ -13,147 +13,49 @@ import tiktoken
 from core.indexer import Indexer
 from core.chunker import Chunker
 from core.vector_db import VectorDB
-from core.embeddings import EmbeddingsAdapter
-from core.query_logger import QueryLogger
+from core.config import Config
 
-
-class RAGException(Exception):
-    """Base exception for RAG-related errors."""
-    pass
-
-
-class RetrievalPolicy:
-    """Data class for retrieval policy configuration."""
-    
-    def __init__(
-        self,
-        policy_type: Literal["strict", "relaxed", "hybrid"] = "strict",
-        top_k: int = 3,
-        similarity_threshold: float = 0.5,
-        use_fallback: bool = False
-    ):
-        """
-        Initialize retrieval policy.
-        
-        Args:
-            policy_type: "strict" (top-k only), "relaxed" (threshold-based), "hybrid" (both)
-            top_k: Number of top results to return
-            similarity_threshold: Minimum similarity score (for relaxed mode)
-            use_fallback: Include BM25 fallback (if available)
-        """
-        self.policy_type = policy_type
-        self.top_k = top_k
-        self.similarity_threshold = similarity_threshold
-        self.use_fallback = use_fallback
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return {
-            "policy_type": self.policy_type,
-            "top_k": self.top_k,
-            "similarity_threshold": self.similarity_threshold,
-            "use_fallback": self.use_fallback,
-        }
+# Download sentence tokenizer once
+nltk.download("punkt", quiet=True)
 
 
 class RAGEngine:
-    """
-    Main RAG Engine for document indexing and retrieval.
+
+    def __init__(self, embed_model="mxbai-embed-large"):
+        print("RAGEngine initialized with model:", embed_model)
+        self.vectordb = VectorDB(embed_model=embed_model)
+        self.embed_model = embed_model
+        # Use a general tokenizer – works well for most LLMs
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+
+    # -------- TOKEN AWARE CHUNKING ---------
+
+    def token_count(self, text):
+        return len(self.tokenizer.encode(text))
     
-    Usage:
-        rag = RAGEngine()
-        
-        # Index documents
-        for progress in rag.index_file("document.pdf"):
-            print(progress["message"])
-        
-        # Retrieve and build prompt
-        contexts = rag.retrieve("What is AI?", top_k=3)
-        prompt = rag.build_prompt(
-            contexts=contexts,
-            question="What is AI?",
-            system_prompt="You are a helpful assistant."
-        )
-    """
-
-    def __init__(
-        self,
-        embedding_mode: str = "ollama",
-        embedding_model: str = "mxbai-embed-large",
-        persist_dir: str = "data/vector_store",
-        state_file: str = "data/ingestion_state.json",
-        logs_dir: str = "data/logs",
-        tokenizer_encoding: str = "cl100k_base",
-        chunking_strategy: Literal["sliding-window", "sentence-aware", "paragraph"] = "sentence-aware",
-    ):
+    def get_embedding_context_length(self) -> int:
+        """Get the context length limit for the embedding model."""
+        if self.embed_model in Config.EMBEDDING_MODEL_CONTEXT_LENGTHS:
+            return Config.EMBEDDING_MODEL_CONTEXT_LENGTHS[self.embed_model]
+        return Config.DEFAULT_EMBEDDING_CONTEXT_LENGTH
+    
+    def truncate_for_embedding(self, text: str) -> str:
         """
-        Initialize RAG Engine.
-        
-        Args:
-            embedding_mode: "ollama" or "sentence-transformer"
-            embedding_model: Model to use for embeddings
-            persist_dir: Directory for Chroma vectorDB
-            state_file: File for ingestion state tracking
-            logs_dir: Directory for query logs
-            tokenizer_encoding: Tokenizer for token counting
-            chunking_strategy: "sliding-window", "sentence-aware", or "paragraph"
+        Truncate text to fit within the embedding model's context window.
+        This prevents 'input length exceeds context length' errors.
         """
-        # Initialize components
-        try:
-            self.embeddings_adapter = EmbeddingsAdapter(
-                mode=embedding_mode,
-                model=embedding_model
-            )
-        except Exception as e:
-            raise RAGException(f"Failed to initialize embeddings: {e}")
+        max_tokens = self.get_embedding_context_length()
+        current_tokens = self.token_count(text)
+        
+        if current_tokens <= max_tokens:
+            return text
+        
+        # Truncate to fit within context
+        encoded = self.tokenizer.encode(text)
+        truncated = self.tokenizer.decode(encoded[:max_tokens])
+        return truncated
 
-        try:
-            self.vectordb = VectorDB(
-                persist_dir=persist_dir,
-                embedding_adapter=self.embeddings_adapter
-            )
-        except Exception as e:
-            raise RAGException(f"Failed to initialize vector DB: {e}")
-
-        try:
-            self.chunker = Chunker(strategy=chunking_strategy, tokenizer_encoding=tokenizer_encoding)
-        except Exception as e:
-            raise RAGException(f"Failed to initialize chunker: {e}")
-
-        try:
-            self.indexer = Indexer(
-                vectordb=self.vectordb,
-                chunker=self.chunker,
-                state_file=state_file
-            )
-        except Exception as e:
-            raise RAGException(f"Failed to initialize indexer: {e}")
-
-        try:
-            self.query_logger = QueryLogger(logs_dir=logs_dir)
-        except Exception as e:
-            raise RAGException(f"Failed to initialize query logger: {e}")
-
-        # Tokenizer for prompt building
-        try:
-            self.tokenizer = tiktoken.get_encoding(tokenizer_encoding)
-        except Exception as e:
-            raise RAGException(f"Failed to initialize tokenizer: {e}")
-
-        self.embedding_model = embedding_model
-        self.embedding_mode = embedding_mode
-
-    # ========== INDEXING ==========
-
-    def index_file(
-        self,
-        file_path: str,
-        force: bool = False,
-        max_tokens: int = 400,
-        overlap_tokens: int = 50,
-        document_title: Optional[str] = None,
-        custom_tags: Optional[dict] = None,
-    ):
+    def chunk_text(self, text, max_tokens=400, overlap_tokens=50):
         """
         Index a single document file.
         Yields progress updates.
@@ -244,327 +146,62 @@ class RAGEngine:
                 where=filters
             )
 
-            # Defensive: ChromaDB should return a dict, but if a list, raise a clear error
-            if isinstance(results, list):
-                raise RAGException("VectorDB returned a list, not a dict. This usually means the collection is empty or ChromaDB API changed. Please check your vector DB and document ingestion.")
-            if not isinstance(results, dict):
-                raise RAGException(f"VectorDB returned unexpected type: {type(results)}")
+            # If adding this sentence exceeds limit -> finalize current chunk
+            if current_tokens + sent_tokens > max_tokens:
+                chunks.append(current_chunk.strip())
+                # Start new chunk with overlap
+                overlap_text = " ".join(
+                    self.tokenizer.decode(
+                        self.tokenizer.encode(current_chunk)[-overlap_tokens:]
+                    ).split()
+                )
+                current_chunk = overlap_text + " " + sent
+                current_tokens = self.token_count(current_chunk)
 
-            chunks = results.get("documents", [])
-            metadatas = results.get("metadatas", [])
-            distances = results.get("distances", [])
-
-            # ChromaDB returns list-of-lists (one per query). Flatten for single-query case.
-            if chunks and isinstance(chunks[0], list):
-                chunks = chunks[0]
-            if metadatas and isinstance(metadatas[0], list):
-                metadatas = metadatas[0]
-            if distances and isinstance(distances[0], list):
-                distances = distances[0]
-
-            if not chunks:
-                return []
-
-            # Ensure distances has same length (ChromaDB may omit for some distance metrics)
-            if not distances:
-                distances = [0.0] * len(chunks)
-            elif len(distances) != len(chunks):
-                distances = (distances + [0.0] * len(chunks))[:len(chunks)]
-
-            # Apply retrieval policy
-            if policy.policy_type == "strict":
-                results_list = [
-                    (chunk, meta)
-                    for chunk, meta in zip(chunks[:policy.top_k], metadatas[:policy.top_k])
-                ]
-            elif policy.policy_type == "relaxed":
-                results_list = [
-                    (chunk, meta)
-                    for chunk, meta, distance in zip(chunks, metadatas, distances)
-                    if (1 - distance) >= policy.similarity_threshold
-                ]
-            elif policy.policy_type == "hybrid":
-                # Include if above threshold OR we haven't filled top_k yet (in distance order)
-                results_list = []
-                for chunk, meta, distance in zip(chunks, metadatas, distances):
-                    sim = 1 - distance
-                    if sim >= policy.similarity_threshold or len(results_list) < policy.top_k:
-                        results_list.append((chunk, meta))
-                    if len(results_list) >= policy.top_k:
-                        break
             else:
-                raise RAGException(f"Unknown policy type: {policy.policy_type}")
+                current_chunk += " " + sent
+                current_tokens += sent_tokens
 
-            return results_list
+        if current_chunk:
+            chunks.append(current_chunk.strip())
 
-        except Exception as e:
-            raise RAGException(f"Retrieval failed: {e}")
+        return chunks
 
-    def retrieve_with_provenance(
-        self,
-        query: str,
-        top_k: int = 3,
-        policy: Optional[RetrievalPolicy] = None,
-    ) -> dict:
-        """
-        Retrieve results with full provenance information.
+
+    # -------- INDEXING ---------
+
+    def index_documents(self, texts, source="manual"):
+
+        for text in texts:
+            if not text or len(text.strip()) < 20:
+                print(f"Skipping invalid document: {source}")
+                continue
+
+            existing_sources = self.vectordb.list_sources()
+            if source in existing_sources:
+                print(f"Source '{source}' already indexed. Skipping.")
+                return False    
+            chunks = self.chunk_text(text)
+            metadatas = [{"source": source} for _ in chunks]
+            ids = [str(uuid.uuid4()) for _ in chunks]
+            self.vectordb.add(
+                documents=chunks,
+                metadatas=metadatas,
+                ids=ids
+            )
+        return True
+
+
+    # -------- RETRIEVAL ---------
+
+    def retrieve(self, query, top_k=3):
+        # Truncate query to fit within embedding model's context window
+        truncated_query = self.truncate_for_embedding(query)
         
-        Args:
-            query: Query text
-            top_k: Number of results
-            policy: RetrievalPolicy
-        
-        Returns:
-            Dict with results, sources, and metadata
-        """
-        results = self.retrieve(query, top_k=top_k, policy=policy)
-
-        provenance = {
-            "query": query,
-            "timestamp": datetime.now().isoformat(),
-            "policy": (policy or RetrievalPolicy()).to_dict(),
-            "results": [
-                {
-                    "text": chunk,
-                    "source_file": meta.get("source_file", "unknown"),
-                    "chunk_id": meta.get("chunk_id", "unknown"),
-                    "page_number": meta.get("page_number"),
-                    "custom_tags": self._parse_custom_tags(meta.get("custom_tags")),
-                }
-                for chunk, meta in results
-            ],
-            "total_results": len(results),
-        }
-
-        return provenance
-
-    # ========== PROMPT BUILDING ==========
-
-    def build_prompt(
-        self,
-        contexts: Union[List[str], List[Tuple[str, dict]]],
-        question: str,
-        system_prompt: str = "You are a helpful AI assistant.",
-        max_context_tokens: int = 2048,
-    ) -> str:
-        """
-        Build a complete prompt with context and question.
-        Automatically trims context to fit within token limit.
-        
-        Args:
-            contexts: List of context texts OR (text, metadata) tuples
-            question: User question
-            system_prompt: System prompt
-            max_context_tokens: Max tokens for context
-        
-        Returns:
-            Complete prompt string
-        """
-        # Normalize contexts to text only
-        context_texts = [
-            ctx if isinstance(ctx, str) else ctx[0]
-            for ctx in contexts
-        ]
-
-        # Trim context to token limit
-        context = self._trim_context(
-            context_texts,
-            max_tokens=max_context_tokens
+        results = self.vectordb.search(
+            query_text=truncated_query,
+            n_results=top_k
         )
-
-        # Build prompt
-        prompt = f"""{system_prompt}
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-
-        return prompt
-
-    def build_prompt_with_citations(
-        self,
-        contexts: List[Tuple[str, dict]],
-        question: str,
-        system_prompt: str = "You are a helpful AI assistant.",
-        max_context_tokens: int = 2048,
-    ) -> Tuple[str, List[dict]]:
-        """
-        Build prompt with citations and return citation list.
-        
-        Args:
-            contexts: List of (text, metadata) tuples
-            question: User question
-            system_prompt: System prompt
-            max_context_tokens: Max tokens for context
-        
-        Returns:
-            Tuple of (prompt, citations)
-        """
-        # Trim context while preserving metadata
-        trimmed_contexts = self._trim_context_with_metadata(
-            contexts,
-            max_tokens=max_context_tokens
-        )
-
-        # Build citations
-        citations = [
-            {
-                "id": meta.get("chunk_id", f"[{idx}]"),
-                "source": meta.get("source_file", "unknown"),
-                "page": meta.get("page_number"),
-            }
-            for idx, (_, meta) in enumerate(trimmed_contexts, 1)
-        ]
-
-        # Build context with citations
-        context_parts = []
-        for idx, (text, _) in enumerate(trimmed_contexts, 1):
-            context_parts.append(f"[{idx}] {text}")
-
-        context = "\n\n".join(context_parts)
-
-        # Build prompt
-        prompt = f"""{system_prompt}
-
-Context:
-{context}
-
-Question: {question}
-
-Answer (cite sources):"""
-
-        return prompt, citations
-
-    # ========== CONTEXT TRIMMING ==========
-
-    def _trim_context(
-        self,
-        context_texts: List[str],
-        max_tokens: int = 2048,
-    ) -> str:
-        """
-        Trim context to fit within token limit.
-        Respects chunk boundaries.
-        
-        Args:
-            context_texts: List of context chunks
-            max_tokens: Max tokens
-        
-        Returns:
-            Trimmed context string
-        """
-        combined = "\n\n".join(context_texts)
-        tokens = self.tokenizer.encode(combined)
-
-        if len(tokens) <= max_tokens:
-            return combined
-
-        # Trim to max tokens
-        trimmed_tokens = tokens[:max_tokens]
-        trimmed = self.tokenizer.decode(trimmed_tokens)
-
-        return trimmed
-
-    def _trim_context_with_metadata(
-        self,
-        contexts: List[Tuple[str, dict]],
-        max_tokens: int = 2048,
-    ) -> List[Tuple[str, dict]]:
-        """
-        Trim context while preserving metadata.
-        Respects chunk boundaries.
-        
-        Args:
-            contexts: List of (text, metadata) tuples
-            max_tokens: Max tokens
-        
-        Returns:
-            List of (text, metadata) tuples that fit within limit
-        """
-        result = []
-        current_tokens = 0
-
-        for text, meta in contexts:
-            text_tokens = len(self.tokenizer.encode(text))
-
-            if current_tokens + text_tokens <= max_tokens:
-                result.append((text, meta))
-                current_tokens += text_tokens
-            else:
-                # Can't fit this chunk; stop
-                break
-
-        return result
-
-    # ========== UTILITIES ==========
-
-    @staticmethod
-    def _parse_custom_tags(val) -> dict:
-        """Parse custom_tags from metadata (may be JSON string from ChromaDB)."""
-        if val is None:
-            return {}
-        if isinstance(val, dict):
-            return val
-        if isinstance(val, str):
-            try:
-                return json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                return {}
-        return {}
-
-    def get_token_count(self, text: str) -> int:
-        """Get token count for text."""
-        return len(self.tokenizer.encode(text))
-
-    def log_query(
-        self,
-        query: str,
-        results: List[Tuple[str, dict]],
-        answer: Optional[str] = None,
-        feedback: Optional[str] = None,
-    ) -> str:
-        """
-        Log a query and results for analysis.
-        
-        Args:
-            query: Query text
-            results: Retrieved results
-            answer: LLM answer (optional)
-            feedback: User feedback (optional)
-        
-        Returns:
-            Log entry ID
-        """
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "query": query,
-            "num_results": len(results),
-            "sources": [meta.get("source_file") for _, meta in results],
-            "answer": answer,
-            "feedback": feedback,
-        }
-
-        return self.query_logger.log(entry)
-
-    def get_query_logs(self, limit: int = 100) -> List[dict]:
-        """Get recent query logs."""
-        return self.query_logger.read_logs(limit=limit)
-
-    def export_logs(self, output_path: str = "query_logs_export.json"):
-        """Export query logs to JSON."""
-        logs = self.get_query_logs(limit=1000)
-        with open(output_path, "w") as f:
-            json.dump(logs, f, indent=2)
-        return output_path
-
-    def stats(self) -> dict:
-        """Get RAG engine statistics."""
-        return {
-            "embedding_mode": self.embedding_mode,
-            "embedding_model": self.embedding_model,
-            "total_queries_logged": len(self.query_logger.read_logs(limit=10000)),
-            "indexed_sources": self.indexer.state.state,
-        }
+        documents = results.get("documents", [[]])[0]
+        context = "\n\n".join(documents)
+        return context
