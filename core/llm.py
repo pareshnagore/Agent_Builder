@@ -386,11 +386,17 @@ class GeminiProvider(LLMProvider):
             config = types.GenerateContentConfig(**config_dict) if config_dict else None
             
             # Stream response
-            response = self.client.models.generate_content(
+            # response = self.client.models.generate_content(
+            #     model=model,
+            #     contents=content_messages,
+            #     config=config
+            #     # stream=True  # Enable streaming
+            # )
+
+            response = self.client.models.generate_content_stream(
                 model=model,
                 contents=content_messages,
-                config=config,
-                stream=True  # Enable streaming
+                config=config
             )
             
             # Yield text chunks as they arrive

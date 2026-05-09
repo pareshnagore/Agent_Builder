@@ -35,10 +35,10 @@ st.sidebar.header("Settings")
 st.sidebar.subheader("LLM Configuration")
 
 # LLM Provider Selection
-provider_options = ["Ollama"]
+provider_options = ["Gemini"]
 if Config.OLLAMA_CLOUD_ENABLED:
     provider_options.append("Ollama Cloud")
-provider_options.append("Gemini")
+provider_options.append("Ollama")
 
 provider = st.sidebar.selectbox(
     "Choose LLM Provider",
