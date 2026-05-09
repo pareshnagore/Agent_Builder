@@ -1,14 +1,14 @@
 # === Agent + LLM Tools ===
-aisuite==0.1.11
-anthropic
-docstring-parser
+# aisuite==0.1.11
+# anthropic
+# docstring-parser
 markdown
-mistralai
-openai
-qrcode
+# mistralai
+# openai
+# qrcode
 tavily-python>=0.7.12
 textstat
-vertexai
+# vertexai
 
 streamlit
 ollama
@@ -17,9 +17,9 @@ pypdf
 pytesseract
 pdf2image
 pillow
-SpeechRecognition 
-pyaudio
-gTTS
+# SpeechRecognition 
+# pyaudio
+# gTTS
 tiktoken 
 nltk
 google-genai
@@ -38,7 +38,7 @@ python-dotenv
 python-multipart
 requests
 sqlalchemy
-uvicorn
+# uvicorn
 
 # === Notebook Experience ===
 ipywidgets
@@ -55,7 +55,7 @@ tabulate
 tinydb
 
 # === Machine Learning / NLP (Optional Enhancements) ===
-jinja2
-psycopg2-binary
-scikit-learn
-Wikipedia
+# jinja2
+# psycopg2-binary
+# scikit-learn
+# Wikipedia
